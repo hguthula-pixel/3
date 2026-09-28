@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Poorna Market VR - Architectural Explorer</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background-color: #0b0f19;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    #info-overlay {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      color: #f8fafc;
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 12px 18px;
+      pointer-events: none;
+      font-size: 14px;
+      backdrop-filter: blur(8px);
+      z-index: 10;
+    }
+    #info-overlay h1 {
+      margin: 0 0 4px 0;
+      font-size: 16px;
+      color: #d4af37;
+      letter-spacing: 0.05em;
+    }
+  </style>
+
+  <!-- Import maps polyfill for Three.js ES Modules directly via CDN -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.170.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.170.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="info-overlay">
+    <h1>POORNA MARKET REDEVELOPMENT</h1>
+    <div>Click <strong>ENTER VR</strong> below with your headset or test with mouse on desktop.</div>
+  </div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { VRButton } from 'three/addons/webxr/VRButton.js';
+
+    // --- 1. CONFIGURATION & ARCHITECTURAL DATA ---
+    const PROJECT_DATA = {
+      defaultSceneId: "scene-plaza",
+      scenes: {
+        "scene-plaza": {
+          id: "scene-plaza",
+          title: "Central Plaza",
+          color: 0x1e293b,
+          gridColor: 0x475569
+        },
+        "scene-veg-market": {
+          id: "scene-veg-market",
+          title: "Vegetable Market",
+          color: 0x064e3b,
+          gridColor: 0x10b981
+        },
+        "scene-spices": {
+          id: "scene-spices",
+          title: "Spice Bazaar",
+          color: 0x7c2d12,
+          gridColor: 0xf97316
+        }
+      },
+      blocks: [
+        {
+          id: "block-03",
+          code: "BLK-03",
+          title: "VEGETABLE MARKET",
+          floors: "Ground + 1 Floor",
+          function: "Fresh Produce & Agrisales",
+          targetSceneId: "scene-veg-market",
+          size: { x: 5, y: 3.5, z: 7 },
+          position: { x: 6, y: 1.75, z: -8 }
+        },
+        {
+          id: "block-02",
+          code: "BLK-02",
+          title: "SPICE BAZAAR",
+          floors: "Ground Level Only",
+          function: "Dry Goods & Regional Spices",
+          targetSceneId: "scene-spices",
+          size: { x: 5, y: 3, z: 6 },
+          position: { x: -6, y: 1.5, z: -8 }
+        }
+      ]
+    };
+
+    // --- 2. GLOBAL STATE & THREE.JS SETUP ---
+    let renderer, scene, camera, dolly;
+    let raycaster, controller, laser;
+    let currentSceneId = PROJECT_DATA.defaultSceneId;
+    let hoveredBlock = null;
+    const selectableMeshes = [];
+
+    // Screen Fade Mesh for VR Scene Transitions
+    let fadeMesh, fadeMaterial;
+
+    // In-VR Floating Info Modal
+    let modalMesh, modalCanvas, modalCtx, modalTexture;
+    let activeModalBlock = null;
+
+    init();
+
+    function init() {
+      // Scene
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(PROJECT_DATA.scenes[currentSceneId].color);
+
+      // Camera & Dolly Rig
+      camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 500);
+      dolly = new THREE.Group();
+      dolly.position.set(0, 1.6, 0); // Average eye-level
+      dolly.add(camera);
+      scene.add(dolly);
+
+      // Lighting
+      const hemiLight = new THREE.HemisphereLight(0xffffff, 0x334155, 1.2);
+      scene.add(hemiLight);
+
+      const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+      dirLight.position.set(10, 20, 10);
+      scene.add(dirLight);
+
+      // Floor Grid
+      const grid = new THREE.GridHelper(50, 50, 0xd4af37, 0x334155);
+      grid.name = "floor-grid";
+      scene.add(grid);
+
+      // Renderer
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.xr.enabled = true;
+      document.body.appendChild(renderer.domElement);
+
+      // VR Button
+      document.body.appendChild(VRButton.createButton(renderer));
+
+      // Build Sub-systems
+      setupTransitionOverlay();
+      setupVRControllers();
+      setupInVRModal();
+      buildArchitecturalBlocks();
+
+      // Window resize
+      window.addEventListener('resize', onWindowResize);
+
+      // Main Loop
+      const clock = new THREE.Clock();
+      renderer.setAnimationLoop(() => {
+        const delta = clock.getDelta();
+        handleLocomotion(delta);
+        handleRaycasting();
+        renderer.render(scene, camera);
+      });
+    }
+
+    // --- 3. ARCHITECTURAL BLOCKS BUILDER ---
+    function buildArchitecturalBlocks() {
+      PROJECT_DATA.blocks.forEach(blockData => {
+        const geom = new THREE.BoxGeometry(blockData.size.x, blockData.size.y, blockData.size.z);
+        const mat = new THREE.MeshStandardMaterial({
+          color: 0x1e293b,
+          roughness: 0.4,
+          transparent: true,
+          opacity: 0.88
+        });
+
+        const mesh = new THREE.Mesh(geom, mat);
+        mesh.position.set(blockData.position.x, blockData.position.y, blockData.position.z);
+        mesh.userData = blockData;
+
+        // Architectural Edge Wireframe
+        const edges = new THREE.EdgesGeometry(geom);
+        const wireframe = new THREE.LineSegments(
+          edges,
+          new THREE.LineBasicMaterial({ color: 0x64748b, linewidth: 2 })
+        );
+        mesh.add(wireframe);
+
+        scene.add(mesh);
+        selectableMeshes.push(mesh);
+      });
+    }
+
+    // --- 4. FLOATING VR MODAL CARD ---
+    function setupInVRModal() {
+      modalCanvas = document.createElement('canvas');
+      modalCanvas.width = 512;
+      modalCanvas.height = 512;
+      modalCtx = modalCanvas.getContext('2d');
+      modalTexture = new THREE.CanvasTexture(modalCanvas);
+
+      const geom = new THREE.PlaneGeometry(1.4, 1.4);
+      const mat = new THREE.MeshBasicMaterial({ 
+        map: modalTexture, 
+        transparent: true, 
+        side: THREE.DoubleSide 
+      });
+
+      modalMesh = new THREE.Mesh(geom, mat);
+      modalMesh.visible = false;
+      scene.add(modalMesh);
+    }
+
+    function showModal(blockData, position) {
+      activeModalBlock = blockData;
+      renderModalUI(blockData);
+      modalTexture.needsUpdate = true;
+
+      // Position modal above block facing the player
+      modalMesh.position.set(position.x, position.y + 2.5, position.z);
+      modalMesh.lookAt(dolly.position.x, position.y + 2.5, dolly.position.z);
+      modalMesh.visible = true;
+    }
+
+    function hideModal() {
+      modalMesh.visible = false;
+      activeModalBlock = null;
+    }
+
+    function renderModalUI(block) {
+      const ctx = modalCtx;
+      ctx.clearRect(0, 0, 512, 512);
+
+      // Card Background
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.94)';
+      ctx.strokeStyle = '#D4AF37';
+      ctx.lineWidth = 6;
+      ctx.beginPath();
+      ctx.roundRect(10, 10, 492, 492, 24);
+      ctx.fill();
+      ctx.stroke();
+
+      // Title & Code
+      ctx.fillStyle = '#FFFFFF';
+      ctx.font = 'bold 28px sans-serif';
+      ctx.fillText(block.title, 36, 68);
+
+      ctx.fillStyle = '#94A3B8';
+      ctx.font = '18px monospace';
+      ctx.fillText(block.code, 36, 100);
+
+      ctx.strokeStyle = '#334155';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(36, 120);
+      ctx.lineTo(476, 120);
+      ctx.stroke();
+
+      // Info Body
+      ctx.fillStyle = '#E2E8F0';
+      ctx.font = '20px sans-serif';
+      ctx.fillText(`Levels: ${block.floors}`, 36, 165);
+      ctx.fillText(`Function: ${block.function}`, 36, 205);
+
+      // Enter Button
+      ctx.fillStyle = '#D4AF37';
+      ctx.beginPath();
+      ctx.roundRect(36, 280, 440, 68, 12);
+      ctx.fill();
+
+      ctx.fillStyle = '#0F172A';
+      ctx.font = 'bold 22px sans-serif';
+      ctx.fillText('[ ENTER BLOCK ]', 150, 322);
+
+      // Cancel / Close Button
+      ctx.strokeStyle = '#64748B';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(36, 370, 440, 58, 12);
+      ctx.stroke();
+
+      ctx.fillStyle = '#94A3B8';
+      ctx.font = '20px sans-serif';
+      ctx.fillText('[ CANCEL / CLOSE ]', 160, 406);
+    }
+
+    // --- 5. VR CONTROLLERS & RAYCASTER ---
+    function setupVRControllers() {
+      raycaster = new THREE.Raycaster();
+
+      controller = renderer.xr.getController(0);
+      controller.addEventListener('selectstart', onTriggerPress);
+      dolly.add(controller);
+
+      // Laser Beam
+      const laserGeo = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(0, 0, 0),
+        new THREE.Vector3(0, 0, -6)
+      ]);
+      const laserMat = new THREE.LineBasicMaterial({ color: 0xd4af37 });
+      laser = new THREE.Line(laserGeo, laserMat);
+      controller.add(laser);
+    }
+
+    function handleRaycasting() {
+      const tempMatrix = new THREE.Matrix4();
+      tempMatrix.identity().extractRotation(controller.matrixWorld);
+
+      raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+      raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+
+      const targets = modalMesh.visible ? [...selectableMeshes, modalMesh] : selectableMeshes;
+      const intersects = raycaster.intersectObjects(targets);
+
+      if (intersects.length > 0) {
+        const hit = intersects[0].object;
+        if (hit === modalMesh) return;
+
+        if (hoveredBlock !== hit) {
+          if (hoveredBlock) resetHighlight(hoveredBlock);
+          hoveredBlock = hit;
+          setHighlight(hoveredBlock);
+        }
+      } else {
+        if (hoveredBlock) {
+          resetHighlight(hoveredBlock);
+          hoveredBlock = null;
+        }
+      }
+    }
+
+    function setHighlight(mesh) {
+      mesh.material.color.set(0x3b82f6);
+      mesh.children[0].material.color.set(0xd4af37);
+    }
+
+    function resetHighlight(mesh) {
+      mesh.material.color.set(0x1e293b);
+      mesh.children[0].material.color.set(0x64748b);
+    }
+
+    function onTriggerPress() {
+      // Check if clicking modal buttons
+      if (modalMesh.visible) {
+        const modalIntersects = raycaster.intersectObject(modalMesh);
+        if (modalIntersects.length > 0) {
+          const uv = modalIntersects[0].uv;
+          // Enter Button Region (UV Y ~ 0.33 to 0.45)
+          if (uv.y > 0.33 && uv.y < 0.46) {
+            triggerSceneTransition(activeModalBlock.targetSceneId);
+            hideModal();
+            return;
+          }
+          // Cancel Button Region (UV Y < 0.30)
+          if (uv.y <= 0.30) {
+            hideModal();
+            return;
+          }
+        }
+      }
+
+      // Check if clicking a building block
+      if (hoveredBlock) {
+        showModal(hoveredBlock.userData, hoveredBlock.position);
+      }
+    }
+
+    // --- 6. LOCOMOTION (THUMBSTICK MOVEMENTS) ---
+    let snapCooldown = false;
+
+    function handleLocomotion(delta) {
+      const session = renderer.xr.getSession();
+      if (!session) return;
+
+      for (const source of session.inputSources) {
+        if (!source.gamepad) continue;
+        const axes = source.gamepad.axes;
+        const stickX = axes[2] || 0;
+        const stickY = axes[3] || 0;
+
+        // Left Controller: Translation (Smooth Locomotion)
+        if (source.handedness === 'left') {
+          if (Math.abs(stickX) > 0.15 || Math.abs(stickY) > 0.15) {
+            const moveVec = new THREE.Vector3(stickX, 0, stickY);
+            const cameraYaw = new THREE.Euler(0, camera.rotation.y, 0, 'YXZ');
+            moveVec.applyEuler(cameraYaw).normalize();
+            dolly.position.addScaledVector(moveVec, 3.0 * delta);
+          }
+        }
+
+        // Right Controller: Snap Turn (45 Degrees)
+        if (source.handedness === 'right') {
+          if (Math.abs(stickX) > 0.6 && !snapCooldown) {
+            const turnAngle = (stickX > 0 ? -1 : 1) * (Math.PI / 4);
+            dolly.rotation.y += turnAngle;
+            snapCooldown = true;
+            setTimeout(() => { snapCooldown = false; }, 300);
+          }
+        }
+      }
+    }
+
+    // --- 7. CINEMATIC VR TRANSITION ENGINE ---
+    function setupTransitionOverlay() {
+      const overlayGeo = new THREE.PlaneGeometry(2, 2);
+      fadeMaterial = new THREE.MeshBasicMaterial({
+        color: 0x05070a,
+        transparent: true,
+        opacity: 0.0,
+        depthTest: false
+      });
+      fadeMesh = new THREE.Mesh(overlayGeo, fadeMaterial);
+      fadeMesh.position.z = -0.15;
+      camera.add(fadeMesh);
+    }
+
+    function triggerSceneTransition(targetSceneId) {
+      fadeScreen(1.0, 300, () => {
+        // Swap scene environment
+        currentSceneId = targetSceneId;
+        const sc = PROJECT_DATA.scenes[targetSceneId];
+        scene.background.set(sc.color);
+
+        // Reposition rig to origin of that space
+        dolly.position.set(0, 1.6, 0);
+
+        fadeScreen(0.0, 300);
+      });
+    }
+
+    function fadeScreen(targetOpacity, durationMs, callback) {
+      const startOpacity = fadeMaterial.opacity;
+      const startTime = performance.now();
+
+      function step(now) {
+        const elapsed = now - startTime;
+        const t = Math.min(elapsed / durationMs, 1.0);
+        fadeMaterial.opacity = startOpacity + (targetOpacity - startOpacity) * t;
+
+        if (t < 1.0) {
+          requestAnimationFrame(step);
+        } else if (callback) {
+          callback();
+        }
+      }
+      requestAnimationFrame(step);
+    }
+
+    function onWindowResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+  </script>
+</body>
+</html>
